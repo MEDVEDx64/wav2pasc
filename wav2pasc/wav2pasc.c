@@ -474,7 +474,8 @@ static int build_frame(void)
 
 /* ------------------------------------------------------------------ */
 /* WAV reading (16/24-bit PCM incl. WAVE_FORMAT_EXTENSIBLE)            */
-/* Sequential-only I/O so the input may be a pipe ('-').               */
+/* Sequential-only, one frame at a time: the input may be a pipe ('-') */
+/* and is never held in memory in its entirety.                        */
 /* ------------------------------------------------------------------ */
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1]<<8 | p[2]<<16 | (uint32_t)p[3]<<24; }
@@ -490,9 +491,19 @@ static void skip_bytes(FILE *f, long n)
     }
 }
 
-/* returns normalized interleaved stereo doubles in [-1, 1) */
-static int read_wav(FILE *f, const char *name, double **out, uint32_t *nsam,
-                    uint32_t *rate_out, int *bits_out)
+static struct {
+    FILE    *f;
+    int      bits;       /* 16 or 24                              */
+    int      sbytes;     /* bytes per sample (2 or 3)             */
+    uint32_t datalen;    /* data chunk size; 0xFFFFFFFF = unknown */
+    uint32_t consumed;   /* bytes read so far                     */
+} wav;
+
+static uint8_t frame_raw[FRAME_SAM * 2 * 3];   /* one frame, 24-bit worst case */
+static double frame_pcm[FRAME_SAM * 2];        /* normalized interleaved stereo */
+
+/* parse + validate the header; leaves the stream at the data chunk */
+static int open_wav(FILE *f, const char *name, uint32_t *rate_out)
 {
     uint8_t hdr[12];
     if (fread(hdr, 1, 12, f) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) {
@@ -549,51 +560,37 @@ static int read_wav(FILE *f, const char *name, double **out, uint32_t *nsam,
         fprintf(stderr, "unsupported sample format: %u bits (16 or 24 supported)\n", bits);
         return -1;
     }
-    int sbytes = bits / 8;
 
-    /* read the data chunk (tolerant of truncated / unknown sizes) */
-    uint8_t *raw;
-    uint32_t actual;
-    if (datalen != 0xFFFFFFFFu) {
-        raw = malloc(datalen ? datalen : 1);
-        if (!raw) { fprintf(stderr, "%s: out of memory\n", name); return -1; }
-        actual = (uint32_t)fread(raw, 1, datalen, f);
-        if (actual != datalen)
-            fprintf(stderr, "%s: warning: data chunk truncated (%u of %u bytes)\n",
-                    name, actual, datalen);
-    } else {
-        /* streaming WAV (unknown size): slurp to EOF */
-        size_t cap = 1u << 20, len = 0;
-        raw = malloc(cap);
-        if (!raw) { fprintf(stderr, "%s: out of memory\n", name); return -1; }
-        for (;;) {
-            if (len == cap) {
-                uint8_t *nr = realloc(raw, cap <<= 1);
-                if (!nr) { free(raw); return -1; }
-                raw = nr;
-            }
-            size_t r = fread(raw + len, 1, cap - len, f);
-            len += r;
-            if (!r) break;
-        }
-        actual = (uint32_t)len;
-    }
-    uint32_t nfr = actual / (2 * sbytes);    /* stereo frames */
-    double *buf = malloc((size_t)nfr * 2 * sizeof(double));
-    if (!buf) { free(raw); return -1; }
-    if (bits == 16) {
+    wav.f = f;
+    wav.bits = bits;
+    wav.sbytes = bits / 8;
+    wav.datalen = datalen;
+    wav.consumed = 0;
+    *rate_out = rate;
+    return 0;
+}
+
+/* read the next frame; returns stereo pairs read (0..FRAME_SAM) as
+   normalized interleaved doubles in [-1, 1) in frame_pcm */
+static int read_pcm_frame(void)
+{
+    size_t want = FRAME_SAM * 2 * (size_t)wav.sbytes;
+    if (wav.datalen != 0xFFFFFFFFu && wav.datalen - wav.consumed < want)
+        want = wav.datalen - wav.consumed;
+    size_t got = fread(frame_raw, 1, want, wav.f);
+    wav.consumed += (uint32_t)got;
+    uint32_t nfr = (uint32_t)(got / (2u * (size_t)wav.sbytes));
+    if (wav.bits == 16) {
         for (uint32_t i = 0; i < nfr * 2; i++)
-            buf[i] = (double)(int16_t)rd16(raw + 2 * i) / 32768.0;
+            frame_pcm[i] = (double)(int16_t)rd16(frame_raw + 2 * i) / 32768.0;
     } else {
         for (uint32_t i = 0; i < nfr * 2; i++) {
-            const uint8_t *p = raw + 3 * i;
+            const uint8_t *p = frame_raw + 3 * i;
             int32_t v = ((int32_t)p[0] << 8 | (int32_t)p[1] << 16 | (int32_t)p[2] << 24) >> 8;
-            buf[i] = (double)v / 8388608.0;
+            frame_pcm[i] = (double)v / 8388608.0;
         }
     }
-    free(raw);
-    *out = buf; *nsam = nfr; *rate_out = rate; *bits_out = bits;
-    return 0;
+    return (int)nfr;
 }
 
 /* ------------------------------------------------------------------ */
@@ -650,9 +647,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    double *pcm = NULL;
-    uint32_t nsam = 0, rate = 0;
-    int bits = 0;
+    uint32_t rate = 0;
 
     FILE *in = stdin;
     if (strcmp(inpath, "-")) {
@@ -661,9 +656,10 @@ int main(int argc, char **argv)
     } else {
         setbin_stdin();
     }
-    int rc = read_wav(in, inpath, &pcm, &nsam, &rate, &bits);
-    if (in != stdin) fclose(in);
-    if (rc != 0) return 1;
+    if (open_wav(in, inpath, &rate) != 0) {
+        if (in != stdin) fclose(in);
+        return 1;
+    }
 
     cfg = (rate == 44100) ? cfg_table[0] : cfg_table[1];
 
@@ -687,7 +683,11 @@ int main(int argc, char **argv)
 
     init_tables();
 
-    uint32_t nframes = nsam / FRAME_SAM;    /* original drops the trailing partial frame */
+    /* original drops the trailing partial frame; with a known data size
+       the frame total is known up front for the progress display */
+    int known_len = wav.datalen != 0xFFFFFFFFu;
+    uint32_t nframes = known_len
+        ? wav.datalen / (2u * (uint32_t)wav.sbytes) / FRAME_SAM : 0;
 
     /* .mp1 padding state: exact newdccu/DCC pattern. newdccu's packet
        counter i starts at 1 (0 is consumed by sync search); frames with
@@ -696,8 +696,9 @@ int main(int argc, char **argv)
        exactly 384 kbps at 44.1 kHz). */
     unsigned ndcc_i = 1;
 
-    for (uint32_t fr = 0; fr < nframes; fr++) {
-        const double *framepcm = pcm + (uint32_t)(fr * FRAME_SAM) * 2;
+    for (uint32_t fr = 0; ; fr++) {
+        if (read_pcm_frame() < FRAME_SAM) break;   /* EOF or partial frame */
+        const double *framepcm = frame_pcm;
 
         for (int b = 0; b < NBLK; b++)
             analysis_block(framepcm, b);
@@ -724,13 +725,17 @@ int main(int argc, char **argv)
         }
 
         if ((fr & 31) == 0) {
-            fprintf(stderr, "\rframe %u/%u", fr + 1, nframes);
+            if (known_len) fprintf(stderr, "\rframe %u/%u", fr + 1, nframes);
+            else           fprintf(stderr, "\rframe %u", fr + 1);
             fflush(stderr);
         }
     }
+    if (in != stdin) fclose(in);
+    if (known_len && wav.consumed < wav.datalen)
+        fprintf(stderr, "%s: warning: data chunk truncated (%u of %u bytes)\n",
+                inpath, wav.consumed, wav.datalen);
     fputc('\n', stderr);
     if (out != stdout) fclose(out);
     else fflush(out);
-    free(pcm);
     return 0;
 }
