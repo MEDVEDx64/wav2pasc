@@ -18,6 +18,7 @@ add_executable(wav2pasc_fast
   wav2pasc_fast.c
   fast_kernels_scalar.c
   fast_kernels_avx2.c
+  fast_kernels_avx512.c
   fast_kernels.h
   ../wav2pasc/pasc_coeffs.h
 )
@@ -36,6 +37,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
   set_source_files_properties(fast_kernels_avx2.c PROPERTIES
     COMPILE_OPTIONS "/arch:AVX2")
+endif()
+
+# The AVX-512 translation unit needs AVX-512F (and only AVX-512F;
+# the 256-bit integer ops on cvtpd2dq results use VEX-encoded AVX2
+# forms, available whenever AVX-512F is).  FP contraction is disabled
+# for the same bit-exactness reasons as the AVX2 TU.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(fast_kernels_avx512.c PROPERTIES
+    COMPILE_OPTIONS "-mavx512f;-ffp-contract=off")
+elseif(MSVC)
+  set_source_files_properties(fast_kernels_avx512.c PROPERTIES
+    COMPILE_OPTIONS "/arch:AVX512")
 endif()
 
 if(NOT MSVC)

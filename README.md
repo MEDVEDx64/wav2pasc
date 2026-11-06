@@ -42,29 +42,32 @@ reference conversion for MP1 output.
 `wav2pasc_fast/` is a sibling encoder with the identical CLI and
 **byte-identical output**, with the hot DSP path (filter bank, energies,
 thresholds, quantization, PCM deinterleaving) rewritten as hand-written
-AVX2 intrinsics kernels plus a restructured history-buffer signal path
-and a word-at-a-time bit writer.
+SIMD intrinsics kernels — AVX-512F, AVX2, and a bit-identical scalar
+fallback — plus a restructured history-buffer signal path and a
+word-at-a-time bit writer.
 
     cmake -S wav2pasc_fast -B build-fast && cmake --build build-fast
 
-- Runtime CPU dispatch: AVX2 kernels on CPUs that support it, a
-  bit-identical scalar fallback otherwise (also used for non-x86
-  targets — verified byte-exact under aarch64 cross-compile + qemu).
-  `WAV2PASC_SCALAR=1` forces the scalar path.
+- Runtime CPU dispatch: AVX-512F kernels on CPUs that support it,
+  falling back to AVX2, falling back to the scalar reference (also
+  used for non-x86 targets — verified byte-exact under aarch64
+  cross-compile + qemu).  The `WAV2PASC_ASM_LEVEL` environment
+  variable forces a specific level: `0`/`scalar`, `1`/`avx2`,
+  `2`/`avx512`; unset = auto-detect the highest level the CPU
+  supports.
 - Exactness rules: vector lanes only ever carry *independent* outputs,
   every per-element reduction keeps the original operation order,
   multiply and add stay separate instructions (never FMA — the AVX2
-  TU compiles with `-ffp-contract=off`), IEEE division and
+  and AVX-512 TUs compile with `-ffp-contract=off`), IEEE division and
   round-to-nearest-even as in the reference.
-- Verified byte-identical to `wav2pasc` on the whole matrix: 10 synth
-  stress files (DC, impulse, silence, -60 dB tone, full-scale square,
-  sweeps, noise, odd length, 16/24-bit, 44.1/48 kHz) plus 22 s 16-bit
-  and 30 s 24-bit/48 kHz audio, each in `-f 0` and `-f 1`, on the AVX2
-  path, the scalar path, and the aarch64 qemu run (66 outputs).
-- Speedup ~2.1-2.5x over the reference build on x86-64 (the reference
-  already auto-vectorizes to SSE2): 0.20 s -> 0.08 s for 22 s of
-  44.1 kHz audio (~300x realtime), 0.09 s -> 0.04 s for 30 s of
-  48 kHz 24-bit.
+- Verified byte-identical to `wav2pasc` across scalar/AVX2/AVX-512 on
+  the full test matrix: 10 synth stress files (DC, impulse, silence,
+  -60 dB tone, full-scale square, sweeps, noise, odd length, 16/24-bit,
+  44.1/48 kHz) plus 22 s 16-bit, 30 s 24-bit/48 kHz, and a 5-min
+  44.1 kHz/16-bit file (each in `-f 0` and `-f 1`, 36 outputs).
+- Speedup (5-min 44.1 kHz/16-bit file, MSVC 19.44 / AVX-512 CPU):
+  scalar 1.34 s → AVX2 0.32 s → AVX-512 0.27 s (~5x over scalar,
+  ~1.2x over AVX2).
 
 ## Usage
 

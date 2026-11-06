@@ -23,6 +23,19 @@
 #define FK_XHIST 480
 
 /*
+ * ASM level selector — picks one of the kernel implementations below.
+ * Used by the runtime dispatch in wav2pasc_fast.c; the WAV2PASC_ASM_LEVEL
+ * environment variable takes either the numeric or the symbolic form.
+ *
+ *   ASM_LEVEL_SCALAR (0) — portable C, bit-exact reference, no SIMD.
+ *   ASM_LEVEL_AVX2   (1) — 256-bit AVX2 intrinsics (requires AVX2).
+ *   ASM_LEVEL_AVX512 (2) — 512-bit AVX-512F intrinsics (requires AVX-512F).
+ */
+#define ASM_LEVEL_SCALAR 0
+#define ASM_LEVEL_AVX2   1
+#define ASM_LEVEL_AVX512 2
+
+/*
  * Analysis contract:
  *   pcmL/pcmR : 384 stereo samples deinterleaved, normalized doubles
  *   xL/xR     : 864 doubles each, xbuf[FK_XHIST + t], t in [-480, 383];
@@ -59,6 +72,7 @@ typedef struct {
 extern const kf_ops kf_ops_scalar;
 #ifdef FK_X86
 extern const kf_ops kf_ops_avx2;
+extern const kf_ops kf_ops_avx512;
 #endif
 
 #endif

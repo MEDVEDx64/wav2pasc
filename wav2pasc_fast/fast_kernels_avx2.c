@@ -156,20 +156,25 @@ static void fk_quantize_row(const double *S, int32_t n,
                             const int32_t *amask, int32_t *code)
 {
     if (n == 32) {
-        const __m256d one = _mm256_set1_pd(ZCLAMP);
+        /* Compare against 1.0 (not ZCLAMP) — matches the scalar
+         * `if (!(qs < 1.0)) qs = ZCLAMP;`.  The previous code reused
+         * the ZCLAMP constant for the comparison too, which clamped
+         * values in [ZCLAMP, 1.0) that the scalar kernel keeps. */
+        const __m256d threshold = _mm256_set1_pd(1.0);
+        const __m256d clamp = _mm256_set1_pd(ZCLAMP);
         const __m256d c23 = _mm256_set1_pd(SC23);
         const __m128i xh = _mm_set1_epi32((int)0x80000000u);
         for (int g = 0; g < 8; g++) {
             const int iq = g * 4;
             __m256d q = _mm256_div_pd(_mm256_loadu_pd(S + iq),
                                       _mm256_loadu_pd(scl + iq));
-            __m256d lt = _mm256_cmp_pd(q, one, FK_CMP_LT);
-            q = _mm256_blendv_pd(one, q, lt);
+            __m256d lt = _mm256_cmp_pd(q, threshold, FK_CMP_LT);
+            q = _mm256_blendv_pd(clamp, q, lt);
             q = _mm256_sub_pd(_mm256_mul_pd(_mm256_loadu_pd(omv + iq), q),
                               _mm256_loadu_pd(off + iq));
             q = _mm256_mul_pd(q, c23);
             q = _mm256_round_pd(q, _MM_FROUND_TO_NEAREST_INT |
-                                    _MM_FROUND_NO_EXC);
+                                     _MM_FROUND_NO_EXC);
             __m128i v = _mm256_cvtpd_epi32(q);
             v = _mm_slli_epi32(v, 8);
             v = _mm_xor_si128(v, xh);

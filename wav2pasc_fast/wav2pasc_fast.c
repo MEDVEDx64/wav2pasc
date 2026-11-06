@@ -1,9 +1,16 @@
 /*
  * wav2pasc_fast — same CLI and byte-identical output as wav2pasc,
- * with the hot loop restructured and accelerated with AVX2 kernels
- * (fast_kernels_avx2.c, intrinsics-based; a bit-identical scalar
- * fallback in fast_kernels_scalar.c keeps the app correct and
- * byte-exact on CPUs without AVX2 and on non-x86 targets).
+ * with the hot loop restructured and accelerated with SIMD kernels
+ * (fast_kernels_avx512.c, fast_kernels_avx2.c, intrinsics-based;
+ * a bit-identical scalar fallback in fast_kernels_scalar.c keeps
+ * the app correct and byte-exact on CPUs without AVX2/AVX-512 and
+ * on non-x86 targets).
+ *
+ * Runtime dispatch (see pick_asm_level() below):
+ *   WAV2PASC_ASM_LEVEL=0|scalar   force scalar
+ *   WAV2PASC_ASM_LEVEL=1|avx2     force AVX2 (if CPU supports it)
+ *   WAV2PASC_ASM_LEVEL=2|avx512   force AVX-512 (if CPU supports it)
+ *   unset                         pick the highest level the CPU supports
  *
  * Byte-exactness rules enforced here:
  *   - identical table values (same expressions, same order);
@@ -11,7 +18,8 @@
  *     (vector lanes carry independent elements; reductions keep the
  *     original sequential order);
  *   - separate multiply and add, never FMA (reference build has no
- *     FMA); the AVX2 TU is compiled with -ffp-contract=off;
+ *     FMA); the AVX2 and AVX-512 TUs are compiled with
+ *     -ffp-contract=off;
  *   - IEEE division, round-to-nearest-even, same integer bit-twiddling;
  *   - the bit-serial put_bits of the original replaced by an equivalent
  *     MSB-first byte writer producing identical frame bytes.
@@ -114,7 +122,6 @@ static const kf_ops *K = &kf_ops_scalar;
 #ifdef FK_X86
 static int avx2_available(void)
 {
-#ifdef FK_X86
 #ifdef __GNUC__
     return __builtin_cpu_supports("avx2");
 #elif defined(_MSC_VER)
@@ -128,9 +135,65 @@ static int avx2_available(void)
 #else
     return 0;
 #endif
+}
+
+/* AVX-512F detection: requires OSXSAVE, AVX, the OS to enable the
+   opmask/ZMM state in XCR0 (bits 5..7), and the AVX-512F feature bit
+   in CPUID leaf 7 sub-leaf 0 EBX[16].  Only AVX-512F is required by
+   the kernels in fast_kernels_avx512.c. */
+static int avx512_available(void)
+{
+#ifdef __GNUC__
+    return __builtin_cpu_supports("avx512f");
+#elif defined(_MSC_VER)
+    int regs[4];
+    __cpuid(regs, 1);
+    if (!(regs[2] & (1 << 27))) return 0;         /* OSXSAVE  */
+    if (!(regs[2] & (1 << 28))) return 0;         /* AVX      */
+    if ((_xgetbv(0) & 0xE6) != 0xE6) return 0;    /* XMM+YMM+opmask+ZMM_Hi256+Hi16_ZMM */
+    __cpuidex(regs, 7, 0);
+    return (regs[1] & (1 << 16)) != 0;            /* AVX-512F */
+#else
+    return 0;
 #endif
 }
 #endif /* FK_X86 */
+
+/*
+ * Pick the kernel set:
+ *   - if WAV2PASC_ASM_LEVEL is set, it forces a level (numeric 0/1/2
+ *     or symbolic "scalar"/"avx2"/"avx512"); a level above what the
+ *     CPU supports is silently clipped down to the highest available;
+ *   - otherwise the highest level supported by the CPU is used.
+ *
+ * Replaces the old WAV2PASC_SCALAR flag.
+ */
+static int pick_asm_level(void)
+{
+    int level = ASM_LEVEL_SCALAR;
+#ifdef FK_X86
+    if (avx2_available())   level = ASM_LEVEL_AVX2;
+    if (avx512_available()) level = ASM_LEVEL_AVX512;
+#endif
+    const char *env = getenv("WAV2PASC_ASM_LEVEL");
+    if (env) {
+        int req = -1;
+        if      (!strcmp(env, "0") || !strcmp(env, "scalar")) req = ASM_LEVEL_SCALAR;
+        else if (!strcmp(env, "1") || !strcmp(env, "avx2"))   req = ASM_LEVEL_AVX2;
+        else if (!strcmp(env, "2") || !strcmp(env, "avx512")) req = ASM_LEVEL_AVX512;
+        if (req >= 0 && req < level) level = req;
+    }
+    return level;
+}
+
+static const char *asm_level_name(int level)
+{
+    switch (level) {
+        case ASM_LEVEL_AVX512: return "avx512";
+        case ASM_LEVEL_AVX2:   return "avx2";
+        default:               return "scalar";
+    }
+}
 
 /* absolute threshold of hearing (Terhardt), dB SPL — as in wav2pasc.c */
 static double thrdb(double f)
@@ -572,8 +635,13 @@ int main(int argc, char **argv)
     }
 
 #ifdef FK_X86
-    if (!getenv("WAV2PASC_SCALAR") && avx2_available())
+    int asm_level = pick_asm_level();
+    if (asm_level >= ASM_LEVEL_AVX512 && avx512_available())
+        K = &kf_ops_avx512;
+    else if (asm_level >= ASM_LEVEL_AVX2 && avx2_available())
         K = &kf_ops_avx2;
+    fprintf(stderr, "wav2pasc_fast: using %s kernels\n",
+            asm_level_name(asm_level));
 #endif
 
     uint32_t rate = 0;
