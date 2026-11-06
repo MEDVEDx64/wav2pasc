@@ -37,6 +37,35 @@ reference conversion for MP1 output.
 
 (Windows/MSVC and GCC/Clang on Unix are supported by the CMake setup.)
 
+### wav2pasc_fast
+
+`wav2pasc_fast/` is a sibling encoder with the identical CLI and
+**byte-identical output**, with the hot DSP path (filter bank, energies,
+thresholds, quantization, PCM deinterleaving) rewritten as hand-written
+AVX2 intrinsics kernels plus a restructured history-buffer signal path
+and a word-at-a-time bit writer.
+
+    cmake -S wav2pasc_fast -B build-fast && cmake --build build-fast
+
+- Runtime CPU dispatch: AVX2 kernels on CPUs that support it, a
+  bit-identical scalar fallback otherwise (also used for non-x86
+  targets — verified byte-exact under aarch64 cross-compile + qemu).
+  `WAV2PASC_SCALAR=1` forces the scalar path.
+- Exactness rules: vector lanes only ever carry *independent* outputs,
+  every per-element reduction keeps the original operation order,
+  multiply and add stay separate instructions (never FMA — the AVX2
+  TU compiles with `-ffp-contract=off`), IEEE division and
+  round-to-nearest-even as in the reference.
+- Verified byte-identical to `wav2pasc` on the whole matrix: 10 synth
+  stress files (DC, impulse, silence, -60 dB tone, full-scale square,
+  sweeps, noise, odd length, 16/24-bit, 44.1/48 kHz) plus 22 s 16-bit
+  and 30 s 24-bit/48 kHz audio, each in `-f 0` and `-f 1`, on the AVX2
+  path, the scalar path, and the aarch64 qemu run (66 outputs).
+- Speedup ~2.1-2.5x over the reference build on x86-64 (the reference
+  already auto-vectorizes to SSE2): 0.20 s -> 0.08 s for 22 s of
+  44.1 kHz audio (~300x realtime), 0.09 s -> 0.04 s for 30 s of
+  48 kHz 24-bit.
+
 ## Usage
 
     wav2pasc [options] input.wav output.mpp
