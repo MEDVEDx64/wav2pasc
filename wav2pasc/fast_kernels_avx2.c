@@ -1,5 +1,5 @@
 /*
- * fast_kernels_avx2.c — AVX2 kernels for wav2pasc_fast (x86 only).
+ * fast_kernels_avx2.c — AVX2 kernels for wav2pasc (x86 only).
  *
  * This file is compiled with the AVX2 instruction set enabled
  * (-mavx2 on GCC/Clang, /arch:AVX2 on MSVC) and MUST be compiled with

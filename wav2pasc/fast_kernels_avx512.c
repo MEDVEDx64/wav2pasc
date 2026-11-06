@@ -1,5 +1,5 @@
 /*
- * fast_kernels_avx512.c — AVX-512F kernels for wav2pasc_fast (x86 only).
+ * fast_kernels_avx512.c — AVX-512F kernels for wav2pasc (x86 only).
  *
  * This file is compiled with the AVX-512F instruction set enabled
  * (-mavx512f on GCC/Clang, /arch:AVX512 on MSVC) and MUST be compiled

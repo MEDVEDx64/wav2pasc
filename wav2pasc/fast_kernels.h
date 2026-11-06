@@ -1,5 +1,5 @@
 /*
- * fast_kernels.h — SIMD kernel interface for wav2pasc_fast.
+ * fast_kernels.h — SIMD kernel interface for wav2pasc.
  *
  * Every kernel is bit-identical to the scalar reference arithmetic in
  * wav2pasc.c: identical operation order per output element, separate
@@ -24,7 +24,7 @@
 
 /*
  * ASM level selector — picks one of the kernel implementations below.
- * Used by the runtime dispatch in wav2pasc_fast.c; the WAV2PASC_ASM_LEVEL
+ * Used by the runtime dispatch in wav2pasc.c; the WAV2PASC_ASM_LEVEL
  * environment variable takes either the numeric or the symbolic form.
  *
  *   ASM_LEVEL_SCALAR (0) — portable C, bit-exact reference, no SIMD.

@@ -1,6 +1,3 @@
-*This project is AI forged: no way on Earth I could make it
-without the might of GLM-5.2.*
-
 # wav2pasc / pasc2wav
 
 The PASC (Precision Adaptive Sub-band Coding) encoder and decoder used by
@@ -33,41 +30,43 @@ reference conversion for MP1 output.
 
 ## Build
 
-    cmake -B build && cmake --build build
+    cmake -S wav2pasc -B build && cmake --build build
 
 (Windows/MSVC and GCC/Clang on Unix are supported by the CMake setup.)
 
-### wav2pasc_fast
+Builds two executables: `wav2pasc` (encoder) and `pasc2wav` (decoder).
 
-`wav2pasc_fast/` is a sibling encoder with the identical CLI and
-**byte-identical output**, with the hot DSP path (filter bank, energies,
-thresholds, quantization, PCM deinterleaving) rewritten as hand-written
-SIMD intrinsics kernels — AVX-512F, AVX2, and a bit-identical scalar
-fallback — plus a restructured history-buffer signal path and a
-word-at-a-time bit writer.
+### SIMD acceleration
 
-    cmake -S wav2pasc_fast -B build-fast && cmake --build build-fast
+The encoder's hot DSP path (filter bank, energies, thresholds,
+quantization, PCM deinterleaving) is written as hand-crafted SIMD
+intrinsics kernels — AVX-512F and AVX2, plus a bit-identical scalar
+fallback (`fast_kernels_avx512.c`, `fast_kernels_avx2.c`,
+`fast_kernels_scalar.c`).
 
-- Runtime CPU dispatch: AVX-512F kernels on CPUs that support it,
+- **Runtime CPU dispatch**: AVX-512F kernels on CPUs that support it,
   falling back to AVX2, falling back to the scalar reference (also
   used for non-x86 targets — verified byte-exact under aarch64
   cross-compile + qemu).  The `WAV2PASC_ASM_LEVEL` environment
   variable forces a specific level: `0`/`scalar`, `1`/`avx2`,
   `2`/`avx512`; unset = auto-detect the highest level the CPU
   supports.
-- Exactness rules: vector lanes only ever carry *independent* outputs,
-  every per-element reduction keeps the original operation order,
-  multiply and add stay separate instructions (never FMA — the AVX2
-  and AVX-512 TUs compile with `-ffp-contract=off`), IEEE division and
-  round-to-nearest-even as in the reference.
-- Verified byte-identical to `wav2pasc` across scalar/AVX2/AVX-512 on
-  the full test matrix: 10 synth stress files (DC, impulse, silence,
-  -60 dB tone, full-scale square, sweeps, noise, odd length, 16/24-bit,
-  44.1/48 kHz) plus 22 s 16-bit, 30 s 24-bit/48 kHz, and a 5-min
-  44.1 kHz/16-bit file (each in `-f 0` and `-f 1`, 36 outputs).
-- Speedup (5-min 44.1 kHz/16-bit file, MSVC 19.44 / AVX-512 CPU):
+- **Exactness rules**: vector lanes only ever carry *independent*
+  outputs, every per-element reduction keeps the original operation
+  order, multiply and add stay separate instructions (never FMA —
+  the AVX2 and AVX-512 TUs compile with `-ffp-contract=off`), IEEE
+  division and round-to-nearest-even as in the reference.
+- **Verified byte-identical** across scalar/AVX2/AVX-512 on the full
+  test matrix: 10 synth stress files (DC, impulse, silence, -60 dB
+  tone, full-scale square, sweeps, noise, odd length, 16/24-bit,
+  44.1/48 kHz) plus 22 s 16-bit, 30 s 24-bit/48 kHz, a 5-min
+  44.1 kHz/16-bit file, and 15 real-music tracks (Duran Duran
+  *Notorious* 44.1 kHz/16-bit; Pink Floyd *Animals* 48 kHz/24-bit,
+  up to 19 min) — each in `-f 0` and `-f 1`.
+- **Speedup** (5-min 44.1 kHz/16-bit file, MSVC 19.44 / AVX-512 CPU):
   scalar 1.34 s → AVX2 0.32 s → AVX-512 0.27 s (~5x over scalar,
-  ~1.2x over AVX2).
+  ~1.2x over AVX2).  The 19-min 48 kHz/24-bit *Animals* track
+  encodes in 1.11 s on the AVX-512 path (~1030x realtime).
 
 ## Usage
 
@@ -148,6 +147,8 @@ expect 44.1 kHz PASC; use `-f 1` for 48 kHz content.
 - 24-bit benefit: 54.2 dB vs 32.7 dB SNR against the 24-bit master on a
   -60 dBFS test tone (+21.5 dB).
 - 48 kHz: encodes, decodes (own decoder + ffmpeg), 384-byte frames.
+- **SIMD parity**: scalar / AVX2 / AVX-512 produce byte-identical output
+  on all test files (see "SIMD acceleration" above).
 - The psychoacoustic tables were cross-validated by emulating the original
   16-bit code (unicorn) directly during reverse engineering.
 
